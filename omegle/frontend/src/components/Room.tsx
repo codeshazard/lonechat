@@ -81,16 +81,24 @@ export const Room = ({
             const sdp = await pc.createAnswer();
             //@ts-ignore
             pc.setLocalDescription(sdp)
-            const stream = new MediaStream();
-            if (remoteVideoRef.current) {
-                remoteVideoRef.current.srcObject = stream;
-            }
 
-            setRemoteMediaStream(stream);
             setReceivingPc(pc);
             (window as any).pcr = pc;
-            pc.ontrack = (_e) => {
-                alert("ontrack");
+
+            pc.ontrack = (e) => {
+                const { track } = e;
+                if (remoteVideoRef.current) {
+                    if (!remoteVideoRef.current.srcObject) {
+                        remoteVideoRef.current.srcObject = new MediaStream();
+                    }
+                    (remoteVideoRef.current.srcObject as MediaStream).addTrack(track);
+                    remoteVideoRef.current.play();
+                }
+                if (track.kind === "video") {
+                    setRemoteVideoTrack(track);
+                } else {
+                    setRemoteAudioTrack(track);
+                }
             }
 
             pc.onicecandidate = async (e) => {
@@ -111,24 +119,6 @@ export const Room = ({
                 roomId,
                 sdp: sdp
             });
-            setTimeout(() => {
-                const track1 = pc.getTransceivers()[0].receiver.track
-                const track2 = pc.getTransceivers()[1].receiver.track
-                console.log(track1);
-                if (track1.kind === "video") {
-                    setRemoteAudioTrack(track2)
-                    setRemoteVideoTrack(track1)
-                } else {
-                    setRemoteAudioTrack(track1)
-                    setRemoteVideoTrack(track2)
-                }
-                //@ts-ignore
-                remoteVideoRef.current.srcObject.addTrack(track1)
-                //@ts-ignore
-                remoteVideoRef.current.srcObject.addTrack(track2)
-                //@ts-ignore
-                remoteVideoRef.current.play();
-            }, 5000)
         });
 
         socket.on("answer", ({roomId: _roomId, sdp: remoteSdp}) => {
