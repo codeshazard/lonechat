@@ -27,7 +27,7 @@ export const Room = ({
     const [_receivingPc, setReceivingPc] = useState<null | RTCPeerConnection>(null);
     const [_remoteVideoTrack, setRemoteVideoTrack] = useState<MediaStreamTrack | null>(null);
     const [_remoteAudioTrack, setRemoteAudioTrack] = useState<MediaStreamTrack | null>(null);
-    const [_remoteMediaStream, setRemoteMediaStream] = useState<MediaStream | null>(null);
+    const [_remoteMediaStream, _setRemoteMediaStream] = useState<MediaStream | null>(null);
     const remoteVideoRef = useRef<HTMLVideoElement | null>(null);
     const localVideoRef = useRef<HTMLVideoElement | null>(null);
 
