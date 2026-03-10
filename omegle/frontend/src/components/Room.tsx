@@ -4,6 +4,13 @@ import { Socket, io } from "socket.io-client";
 
 const URL = "https://lonechat.onrender.com";
 
+const iceConfig = {
+    iceServers: [
+        { urls: 'stun:stun.l.google.com:19302' },
+        { urls: 'stun:stun1.l.google.com:19302' },
+    ]
+};
+
 export const Room = ({
     name,
     localAudioTrack,
@@ -29,7 +36,7 @@ export const Room = ({
         socket.on('send-offer', async ({roomId}) => {
             console.log("sending offer");
             setLobby(false);
-            const pc = new RTCPeerConnection();
+            const pc = new RTCPeerConnection(iceConfig);
 
             setSendingPc(pc);
             if (localVideoTrack) {
@@ -69,7 +76,7 @@ export const Room = ({
         socket.on("offer", async ({roomId, sdp: remoteSdp}) => {
             console.log("received offer");
             setLobby(false);
-            const pc = new RTCPeerConnection();
+            const pc = new RTCPeerConnection(iceConfig);
             pc.setRemoteDescription(remoteSdp)
             const sdp = await pc.createAnswer();
             //@ts-ignore
