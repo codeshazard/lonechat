@@ -26,50 +26,48 @@ export const Room = ({
     const [_sendingPc, setSendingPc] = useState<null | RTCPeerConnection>(null);
     const [_receivingPc, setReceivingPc] = useState<null | RTCPeerConnection>(null);
     const [_remoteVideoTrack, setRemoteVideoTrack] = useState<MediaStreamTrack | null>(null);
-    const [_remoteAudioTrack, setRemoteAudioTrack] = useState<MediaStreamTrack | null>(null);
+    const [_remoteAudioTrack, _setRemoteAudioTrack] = useState<MediaStreamTrack | null>(null);
     const [_remoteMediaStream, _setRemoteMediaStream] = useState<MediaStream | null>(null);
     const remoteVideoRef = useRef<HTMLVideoElement | null>(null);
     const localVideoRef = useRef<HTMLVideoElement | null>(null);
 
+    // Use refs to avoid stale closure issues
+    const sendingPcRef = useRef<RTCPeerConnection | null>(null);
+    const receivingPcRef = useRef<RTCPeerConnection | null>(null);
+    const pendingCandidates = useRef<{candidate: RTCIceCandidateInit, type: string}[]>([]);
+
     useEffect(() => {
         const socket = io(URL);
+
         socket.on('send-offer', async ({roomId}) => {
             console.log("sending offer");
             setLobby(false);
             const pc = new RTCPeerConnection(iceConfig);
-
+            sendingPcRef.current = pc;
             setSendingPc(pc);
+
             if (localVideoTrack) {
-                console.error("added tack");
-                console.log(localVideoTrack)
-                pc.addTrack(localVideoTrack)
+                pc.addTrack(localVideoTrack);
             }
             if (localAudioTrack) {
-                console.error("added tack");
-                console.log(localAudioTrack)
-                pc.addTrack(localAudioTrack)
+                pc.addTrack(localAudioTrack);
             }
 
-            pc.onicecandidate = async (e) => {
-                console.log("receiving ice candidate locally");
+            pc.onicecandidate = (e) => {
                 if (e.candidate) {
-                   socket.emit("add-ice-candidate", {
-                    candidate: e.candidate,
-                    type: "sender",
-                    roomId
-                   })
+                    socket.emit("add-ice-candidate", {
+                        candidate: e.candidate,
+                        type: "sender",
+                        roomId
+                    });
                 }
             }
 
             pc.onnegotiationneeded = async () => {
-                console.log("on negotiation neeeded, sending offer");
+                console.log("on negotiation needed, sending offer");
                 const sdp = await pc.createOffer();
-                //@ts-ignore
-                pc.setLocalDescription(sdp)
-                socket.emit("offer", {
-                    sdp,
-                    roomId
-                })
+                await pc.setLocalDescription(sdp);
+                socket.emit("offer", { sdp, roomId });
             }
         });
 
@@ -77,15 +75,11 @@ export const Room = ({
             console.log("received offer");
             setLobby(false);
             const pc = new RTCPeerConnection(iceConfig);
-            pc.setRemoteDescription(remoteSdp)
-            const sdp = await pc.createAnswer();
-            //@ts-ignore
-            pc.setLocalDescription(sdp)
-
+            receivingPcRef.current = pc;
             setReceivingPc(pc);
-            (window as any).pcr = pc;
 
             pc.ontrack = (e) => {
+                console.log("ontrack fired!", e.track.kind);
                 const { track } = e;
                 if (remoteVideoRef.current) {
                     if (!remoteVideoRef.current.srcObject) {
@@ -96,81 +90,69 @@ export const Room = ({
                 }
                 if (track.kind === "video") {
                     setRemoteVideoTrack(track);
-                } else {
-                    setRemoteAudioTrack(track);
                 }
             }
 
-            pc.onicecandidate = async (e) => {
-                if (!e.candidate) {
-                    return;
-                }
-                console.log("omn ice candidate on receiving seide");
-                if (e.candidate) {
-                   socket.emit("add-ice-candidate", {
+            pc.onicecandidate = (e) => {
+                if (!e.candidate) return;
+                socket.emit("add-ice-candidate", {
                     candidate: e.candidate,
                     type: "receiver",
                     roomId
-                   })
-                }
+                });
             }
 
-            socket.emit("answer", {
-                roomId,
-                sdp: sdp
-            });
+            await pc.setRemoteDescription(remoteSdp);
+
+            // Flush any pending candidates that arrived early
+            for (const {candidate} of pendingCandidates.current) {
+                await pc.addIceCandidate(candidate);
+            }
+            pendingCandidates.current = [];
+
+            const sdp = await pc.createAnswer();
+            await pc.setLocalDescription(sdp);
+
+            socket.emit("answer", { roomId, sdp });
         });
 
-        socket.on("answer", ({roomId: _roomId, sdp: remoteSdp}) => {
-            setLobby(false);
-            setSendingPc(pc => {
-                pc?.setRemoteDescription(remoteSdp)
-                return pc;
-            });
+        socket.on("answer", async ({roomId: _roomId, sdp: remoteSdp}) => {
             console.log("loop closed");
-        })
+            setLobby(false);
+            if (sendingPcRef.current) {
+                await sendingPcRef.current.setRemoteDescription(remoteSdp);
+            }
+        });
 
         socket.on("lobby", () => {
             setLobby(true);
-        })
+        });
 
-        socket.on("add-ice-candidate", ({candidate, type}) => {
-            console.log("add ice candidate from remote");
-            console.log({candidate, type})
-            if (type == "sender") {
-                setReceivingPc(pc => {
-                    if (!pc) {
-                        console.error("receicng pc nout found")
-                    } else {
-                        console.error(pc.ontrack)
-                    }
-                    pc?.addIceCandidate(candidate)
-                    return pc;
-                });
+        socket.on("add-ice-candidate", async ({candidate, type}) => {
+            console.log("add ice candidate from remote", type);
+            if (type === "sender") {
+                if (receivingPcRef.current) {
+                    await receivingPcRef.current.addIceCandidate(candidate);
+                } else {
+                    // Queue it for later
+                    pendingCandidates.current.push({candidate, type});
+                }
             } else {
-                setSendingPc(pc => {
-                    if (!pc) {
-                        console.error("sending pc nout found")
-                    } else {
-                        // console.error(pc.ontrack)
-                    }
-                    pc?.addIceCandidate(candidate)
-                    return pc;
-                });
+                if (sendingPcRef.current) {
+                    await sendingPcRef.current.addIceCandidate(candidate);
+                }
             }
-        })
+        });
 
-        setSocket(socket)
-    }, [name])
+        setSocket(socket);
+    }, [name]);
 
     useEffect(() => {
-        if (localVideoRef.current) {
-            if (localVideoTrack) {
-                localVideoRef.current.srcObject = new MediaStream([localVideoTrack]);
-                localVideoRef.current.play();
-            }
+        if (localVideoRef.current && localVideoTrack) {
+            localVideoRef.current.srcObject = new MediaStream([localVideoTrack]);
+            localVideoRef.current.play();
         }
-    }, [localVideoRef])
+    }, [localVideoRef]);
 
     return <div>
         Hi {name}
