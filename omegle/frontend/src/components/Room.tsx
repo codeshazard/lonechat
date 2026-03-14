@@ -169,6 +169,16 @@ export const Room = ({
     useEffect(() => {
         const sock = io(URL);
         socketRef.current = sock;
+        sock.on("connect", () => {
+        sock.emit("init-user", {
+            name,
+            preferences: _preferences ?? {
+                gender: "Male",
+                preferredGender: "Any",
+                interests: []
+                }
+            });
+        });
 
         sock.on('send-offer', async ({ roomId }) => {
             setLobby(false);
