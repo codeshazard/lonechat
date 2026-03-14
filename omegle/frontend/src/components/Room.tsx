@@ -24,8 +24,8 @@ export const Room = ({
     name,
     localAudioTrack,
     localVideoTrack,
-    preferences,
-    textOnly
+    _preferences,
+    _textOnly
 }: {
     name: string,
     localAudioTrack: MediaStreamTrack | null,
