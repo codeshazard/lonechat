@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, useCallback } from "react";
 import { useSearchParams } from "react-router-dom";
 import { Socket, io } from "socket.io-client";
 
-const URL = "https://lonechat.onrender.com";
+const URL = "http://localhost:3000";
 
 const SIGHTENGINE_USER = import.meta.env.VITE_SIGHTENGINE_USER;
 const SIGHTENGINE_SECRET = import.meta.env.VITE_SIGHTENGINE_SECRET;
@@ -150,7 +150,12 @@ export const Room = ({
     }, [chatInput, lobby]);
 
     useEffect(() => {
-        chatBottomRef.current?.scrollIntoView({ behavior: "smooth" });
+        if (chatBottomRef.current && chatBottomRef.current.parentElement) {
+            chatBottomRef.current.parentElement.scrollTo({
+                top: chatBottomRef.current.parentElement.scrollHeight,
+                behavior: "smooth"
+            });
+        }
     }, [messages]);
 
     useEffect(() => {
@@ -550,18 +555,17 @@ export const Room = ({
                     <div className="chat-panel">
                         <div className="chat-header">Chat</div>
                         <div className="chat-messages">
-                            {messages.length === 0 ? (
+                            {messages.length === 0 && (
                                 <div className="chat-empty">
                                     {lobby ? "Connect to someone to start chatting" : "Say hi to your new stranger! 👋"}
                                 </div>
-                            ) : (
-                                messages.map((msg, i) => (
-                                    <div key={i} className={`chat-msg ${msg.from}`}>
-                                        <div className="chat-bubble">{msg.text}</div>
-                                        <div className="chat-time">{msg.time}</div>
-                                    </div>
-                                ))
                             )}
+                            {messages.map((msg, i) => (
+                                <div key={i} className={`chat-msg ${msg.from}`}>
+                                    <div className="chat-bubble">{msg.text}</div>
+                                    <div className="chat-time">{msg.time}</div>
+                                </div>
+                            ))}
                             <div ref={chatBottomRef} />
                         </div>
                         <div className="chat-input-area">
