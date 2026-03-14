@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, useCallback } from "react";
 import { useSearchParams } from "react-router-dom";
 import { Socket, io } from "socket.io-client";
 
-const URL = "http://localhost:3000";
+const URL = "https://lonechat.onrender.com"
 
 const SIGHTENGINE_USER = import.meta.env.VITE_SIGHTENGINE_USER;
 const SIGHTENGINE_SECRET = import.meta.env.VITE_SIGHTENGINE_SECRET;
