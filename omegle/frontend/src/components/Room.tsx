@@ -23,11 +23,19 @@ interface ChatMessage {
 export const Room = ({
     name,
     localAudioTrack,
-    localVideoTrack
+    localVideoTrack,
+    preferences,
+    textOnly
 }: {
     name: string,
     localAudioTrack: MediaStreamTrack | null,
     localVideoTrack: MediaStreamTrack | null,
+    preferences: {
+        gender: "Male" | "Female";
+        preferredGender: "Male" | "Female" | "Any";
+        interests: string[];
+    },
+    textOnly: boolean,
 }) => {
     const [_searchParams, _setSearchParams] = useSearchParams();
     const [lobby, setLobby] = useState(true);
