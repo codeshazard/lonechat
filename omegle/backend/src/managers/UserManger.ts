@@ -1,9 +1,16 @@
-import { Socket } from "socket.io";
+import { Socket, Server } from "socket.io";
 import { RoomManager } from "./RoomManager";
+
+export interface UserPreferences {
+    gender: "Male" | "Female";
+    preferredGender: "Male" | "Female" | "Any";
+    interests: string[];
+}
 
 export interface User {
     socket: Socket;
     name: string;
+    preferences: UserPreferences;
 }
 
 export class UserManager {
@@ -11,12 +18,14 @@ export class UserManager {
     private queue: string[];
     private roomManager: RoomManager;
     private blockedPairs: Set<string>;
+    private io: Server;
 
-    constructor() {
+    constructor(io: Server) {
         this.users = [];
         this.queue = [];
         this.roomManager = new RoomManager();
         this.blockedPairs = new Set();
+        this.io = io;
     }
 
     private getPairKey(id1: string, id2: string): string {
@@ -31,8 +40,8 @@ export class UserManager {
         this.blockedPairs.add(this.getPairKey(id1, id2));
     }
 
-    addUser(name: string, socket: Socket) {
-        this.users.push({ name, socket });
+    addUser(name: string, socket: Socket, preferences: UserPreferences) {
+        this.users.push({ name, socket, preferences });
         this.queue.push(socket.id);
         socket.emit("lobby");
         this.clearQueue();
@@ -95,10 +104,43 @@ export class UserManager {
         this.clearQueue();
     }
 
+    private isMatch(user1: User, user2: User, strict: boolean): boolean {
+        // Gender preference check
+        const u1LikesU2 = user1.preferences.preferredGender === "Any" || user1.preferences.preferredGender === user2.preferences.gender;
+        const u2LikesU1 = user2.preferences.preferredGender === "Any" || user2.preferences.preferredGender === user1.preferences.gender;
+        
+        if (!u1LikesU2 || !u2LikesU1) return false;
+
+        if (strict) {
+            // Check for at least one shared interest if strict matching
+            if (user1.preferences.interests.length > 0 && user2.preferences.interests.length > 0) {
+                const hasSharedInterest = user1.preferences.interests.some(interest => 
+                    user2.preferences.interests.includes(interest)
+                );
+                if (!hasSharedInterest) return false;
+            } else if (user1.preferences.interests.length > 0 || user2.preferences.interests.length > 0) {
+                // If one has interests and the other doesn't, it's not a strict match
+                return false;
+            }
+        }
+        
+        return true;
+    }
+
     clearQueue() {
         console.log("inside clear queue, length:", this.queue.length);
         if (this.queue.length < 2) return;
 
+        // Pass 1: Strict matching (gender + interests)
+        if (this.tryMatchUsers(true)) return;
+
+        // Pass 2: Relaxed matching (gender only, ignore interests)
+        if (this.tryMatchUsers(false)) return;
+
+        console.log("No non-blocked matching pairs available in queue");
+    }
+
+    private tryMatchUsers(strict: boolean): boolean {
         for (let i = this.queue.length - 1; i >= 1; i--) {
             for (let j = i - 1; j >= 0; j--) {
                 const id1 = this.queue[i];
@@ -108,18 +150,17 @@ export class UserManager {
                     const user1 = this.users.find(x => x.socket.id === id1);
                     const user2 = this.users.find(x => x.socket.id === id2);
 
-                    if (user1 && user2) {
+                    if (user1 && user2 && this.isMatch(user1, user2, strict)) {
                         this.queue = this.queue.filter((_, idx) => idx !== i && idx !== j);
-                        console.log("creating room for", id1, id2);
+                        console.log(`[Mode: ${strict ? 'Strict' : 'Relaxed'}] Creating room for`, id1, id2);
                         this.roomManager.createRoom(user1, user2);
                         this.clearQueue();
-                        return;
+                        return true;
                     }
                 }
             }
         }
-
-        console.log("No non-blocked pairs available in queue");
+        return false;
     }
 
     initHandlers(socket: Socket) {
@@ -146,14 +187,28 @@ export class UserManager {
         });
 
         socket.on("chat-message", ({ message }: { message: string }) => {
-        console.log("chat message received from:", socket.id, "message:", message);
-        const result = this.roomManager.getRoomBySocketId(socket.id);
-        console.log("room found:", result ? result.roomId : "NOT FOUND");
-        if (!result) return;
-        const { room } = result;
-        const otherUser = room.user1.socket.id === socket.id ? room.user2 : room.user1;
-        console.log("sending to:", otherUser.socket.id);
-        otherUser.socket.emit("chat-message", { message });
-    });
+            console.log("chat message received from:", socket.id, "message:", message);
+            const result = this.roomManager.getRoomBySocketId(socket.id);
+            if (!result) return;
+            const { room } = result;
+            const otherUser = room.user1.socket.id === socket.id ? room.user2 : room.user1;
+            otherUser.socket.emit("chat-message", { message });
+        });
+
+        socket.on("typing-start", () => {
+            const result = this.roomManager.getRoomBySocketId(socket.id);
+            if (!result) return;
+            const { room } = result;
+            const otherUser = room.user1.socket.id === socket.id ? room.user2 : room.user1;
+            otherUser.socket.emit("typing-start");
+        });
+
+        socket.on("typing-stop", () => {
+            const result = this.roomManager.getRoomBySocketId(socket.id);
+            if (!result) return;
+            const { room } = result;
+            const otherUser = room.user1.socket.id === socket.id ? room.user2 : room.user1;
+            otherUser.socket.emit("typing-stop");
+        });
     }
 }
