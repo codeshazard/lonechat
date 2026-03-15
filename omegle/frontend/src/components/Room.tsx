@@ -2,12 +2,12 @@ import { useEffect, useRef, useState, useCallback } from "react";
 import { useSearchParams } from "react-router-dom";
 import { Socket, io } from "socket.io-client";
 
-const URL = "https://lonechat.onrender.com"
+const BACKEND_URL = "https://lonechat.onrender.com";
 
 const SIGHTENGINE_USER = import.meta.env.VITE_SIGHTENGINE_USER;
 const SIGHTENGINE_SECRET = import.meta.env.VITE_SIGHTENGINE_SECRET;
 
-const iceConfig = {
+const FALLBACK_ICE_CONFIG = {
     iceServers: [
         { urls: 'stun:stun.l.google.com:19302' },
         { urls: 'stun:stun1.l.google.com:19302' },
@@ -15,7 +15,7 @@ const iceConfig = {
 };
 
 interface ChatMessage {
-    from: "you" | "stranger";
+    from: "you" | "stranger" | "system";
     text: string;
     time: string;
 }
@@ -25,7 +25,7 @@ export const Room = ({
     localAudioTrack,
     localVideoTrack,
     preferences: _preferences,
-    textOnly: _textOnly
+    textOnly,
 }: {
     name: string,
     localAudioTrack: MediaStreamTrack | null,
@@ -51,6 +51,8 @@ export const Room = ({
     const [chatInput, setChatInput] = useState("");
     const [isMuted, setIsMuted] = useState(false);
     const [isCamOff, setIsCamOff] = useState(false);
+    const [strangerTyping, setStrangerTyping] = useState(false);
+    const [onlineCount, setOnlineCount] = useState<number | null>(null);
 
     const remoteVideoRef = useRef<HTMLVideoElement | null>(null);
     const localVideoRef = useRef<HTMLVideoElement | null>(null);
@@ -60,8 +62,35 @@ export const Room = ({
     const abuseCheckInterval = useRef<ReturnType<typeof setInterval> | null>(null);
     const socketRef = useRef<Socket | null>(null);
     const chatBottomRef = useRef<HTMLDivElement | null>(null);
+    const iceConfigRef = useRef<RTCConfiguration>(FALLBACK_ICE_CONFIG);
+    const lobbyRef = useRef(true);
+    const typingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const isTypingRef = useRef(false);
 
     const getTime = () => new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+
+    const setLobbySync = (val: boolean) => {
+        lobbyRef.current = val;
+        setLobby(val);
+    };
+
+    const fetchIceConfig = useCallback(async () => {
+    try {
+        const res = await fetch(`${BACKEND_URL}/ice-servers`);
+        const data = await res.json();
+        if (Array.isArray(data)) {
+            iceConfigRef.current = { iceServers: data };
+        } else if (data.iceServers && Array.isArray(data.iceServers)) {
+            iceConfigRef.current = { iceServers: data.iceServers };
+        } else {
+            iceConfigRef.current = FALLBACK_ICE_CONFIG;
+        }
+        console.log("ICE config loaded:", iceConfigRef.current);
+    } catch (err) {
+        console.warn("Failed to fetch ICE config, using fallback:", err);
+        iceConfigRef.current = FALLBACK_ICE_CONFIG;
+    }
+    }, []);
 
     const toggleMute = useCallback(() => {
         if (localAudioTrack) {
@@ -87,24 +116,24 @@ export const Room = ({
         if (remoteVideoRef.current) remoteVideoRef.current.srcObject = null;
         if (abuseCheckInterval.current) { clearInterval(abuseCheckInterval.current); abuseCheckInterval.current = null; }
         setAbuseWarning(null);
-        setMessages([]);
+        setStrangerTyping(false);
+        isTypingRef.current = false;
     }, []);
 
     const handleNext = useCallback(() => {
         cleanupPeerConnections();
+        setMessages([]);
         socketRef.current?.emit("next");
     }, [cleanupPeerConnections]);
 
     const checkForAbuse = useCallback(async () => {
         const video = remoteVideoRef.current;
         if (!video || !video.srcObject || video.readyState < 2) return;
-
         const canvas = document.createElement("canvas");
         canvas.width = 320; canvas.height = 240;
         const ctx = canvas.getContext("2d");
         if (!ctx) return;
         ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-
         canvas.toBlob(async (blob) => {
             if (!blob) return;
             try {
@@ -113,17 +142,14 @@ export const Room = ({
                 formData.append("models", "nudity-2.0,weapon,recreational_drug");
                 formData.append("api_user", SIGHTENGINE_USER);
                 formData.append("api_secret", SIGHTENGINE_SECRET);
-
                 const res = await fetch("https://api.sightengine.com/1.0/check.json", { method: "POST", body: formData });
                 const data = await res.json();
-
                 const nudityScore = data?.nudity?.sexual_activity ?? 0;
                 const weaponScore = data?.weapon ?? 0;
                 const drugScore = data?.recreational_drug ?? 0;
-
                 if (nudityScore > 0.7 || weaponScore > 0.7 || drugScore > 0.7) {
                     setAbuseWarning("Inappropriate content detected. Disconnecting...");
-                    setLobby(true);
+                    setLobbySync(true);
                     setTimeout(() => handleNext(), 2000);
                 }
             } catch (err) {
@@ -136,26 +162,54 @@ export const Room = ({
         if (reportCooldown) return;
         setReportCooldown(true);
         setAbuseWarning("User reported. Disconnecting...");
-        setLobby(true);
+        setLobbySync(true);
         setTimeout(() => {
             cleanupPeerConnections();
+            setMessages([]);
             socketRef.current?.emit("report");
             setReportCooldown(false);
         }, 1500);
     }, [cleanupPeerConnections, reportCooldown]);
 
     const startAbuseDetection = useCallback(() => {
+        if (textOnly) return; // no video to check in text-only mode
         if (abuseCheckInterval.current) clearInterval(abuseCheckInterval.current);
-        abuseCheckInterval.current = setInterval(checkForAbuse, 30000);
-    }, [checkForAbuse]);
+        setTimeout(() => checkForAbuse(), 3000);
+        abuseCheckInterval.current = setInterval(checkForAbuse, 10000);
+    }, [checkForAbuse, textOnly]);
 
     const sendMessage = useCallback(() => {
         const text = chatInput.trim();
-        if (!text || lobby) return;
+        if (!text || lobbyRef.current) return;
         socketRef.current?.emit("chat-message", { message: text });
         setMessages(prev => [...prev, { from: "you", text, time: getTime() }]);
         setChatInput("");
-    }, [chatInput, lobby]);
+        // stop typing indicator when message sent
+        if (isTypingRef.current) {
+            socketRef.current?.emit("typing-stop");
+            isTypingRef.current = false;
+        }
+    }, [chatInput]);
+
+    const handleTyping = useCallback((value: string) => {
+        setChatInput(value);
+        if (lobbyRef.current) return;
+        if (value.trim() && !isTypingRef.current) {
+            socketRef.current?.emit("typing-start");
+            isTypingRef.current = true;
+        }
+        if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
+        typingTimeoutRef.current = setTimeout(() => {
+            if (isTypingRef.current) {
+                socketRef.current?.emit("typing-stop");
+                isTypingRef.current = false;
+            }
+        }, 2000);
+        if (!value.trim() && isTypingRef.current) {
+            socketRef.current?.emit("typing-stop");
+            isTypingRef.current = false;
+        }
+    }, []);
 
     useEffect(() => {
         if (chatBottomRef.current && chatBottomRef.current.parentElement) {
@@ -164,25 +218,41 @@ export const Room = ({
                 behavior: "smooth"
             });
         }
-    }, [messages]);
+    }, [messages, strangerTyping]);
 
     useEffect(() => {
-        const sock = io(URL);
+        fetchIceConfig();
+
+        const sock = io(BACKEND_URL, {
+            reconnection: true,
+            reconnectionAttempts: 10,
+            reconnectionDelay: 1000,
+            reconnectionDelayMax: 5000,
+        });
         socketRef.current = sock;
+
         sock.on("connect", () => {
-        sock.emit("init-user", {
-            name,
-            preferences: _preferences ?? {
-                gender: "Male",
-                preferredGender: "Any",
-                interests: []
-                }
+            sock.emit("init-user", {
+                name,
+                preferences: _preferences ?? { gender: "Male", preferredGender: "Any", interests: [] }
             });
         });
 
+        sock.on("reconnect", () => {
+            cleanupPeerConnections();
+            setMessages([]);
+            setLobbySync(true);
+        });
+
+        sock.on("online-count", (count: number) => setOnlineCount(count));
+
         sock.on('send-offer', async ({ roomId }) => {
-            setLobby(false);
-            const pc = new RTCPeerConnection(iceConfig);
+            setLobbySync(false);
+            setMessages(prev => [...prev, { from: "system", text: "Stranger connected.", time: getTime() }]);
+
+            if (textOnly) return; // text-only: skip WebRTC entirely
+
+            const pc = new RTCPeerConnection(iceConfigRef.current);
             sendingPcRef.current = pc;
             setSendingPc(pc);
 
@@ -200,8 +270,12 @@ export const Room = ({
         });
 
         sock.on("offer", async ({ roomId, sdp: remoteSdp }) => {
-            setLobby(false);
-            const pc = new RTCPeerConnection(iceConfig);
+            setLobbySync(false);
+            setMessages(prev => [...prev, { from: "system", text: "Stranger connected.", time: getTime() }]);
+
+            if (textOnly) return; // text-only: skip WebRTC entirely
+
+            const pc = new RTCPeerConnection(iceConfigRef.current);
             receivingPcRef.current = pc;
             setReceivingPc(pc);
 
@@ -230,12 +304,18 @@ export const Room = ({
         });
 
         sock.on("answer", async ({ roomId: _roomId, sdp: remoteSdp }) => {
-            setLobby(false);
+            setLobbySync(false);
             if (sendingPcRef.current) await sendingPcRef.current.setRemoteDescription(remoteSdp);
             startAbuseDetection();
         });
 
-        sock.on("lobby", () => { cleanupPeerConnections(); setLobby(true); });
+        sock.on("lobby", () => {
+            if (!lobbyRef.current) {
+                setMessages(prev => [...prev, { from: "system", text: "Stranger disconnected.", time: getTime() }]);
+            }
+            cleanupPeerConnections();
+            setLobbySync(true);
+        });
 
         sock.on("add-ice-candidate", async ({ candidate, type }) => {
             if (type === "sender") {
@@ -248,14 +328,18 @@ export const Room = ({
 
         sock.on("chat-message", ({ message }: { message: string }) => {
             setMessages(prev => [...prev, { from: "stranger", text: message, time: getTime() }]);
+            setStrangerTyping(false);
         });
+
+        sock.on("typing-start", () => setStrangerTyping(true));
+        sock.on("typing-stop", () => setStrangerTyping(false));
 
         setSocket(sock);
         return () => { sock.disconnect(); };
     }, [name]);
 
     useEffect(() => {
-        if (localVideoRef.current && localVideoTrack) {
+        if (localVideoRef.current && localVideoTrack && !textOnly) {
             localVideoRef.current.srcObject = new MediaStream([localVideoTrack]);
             localVideoRef.current.play();
         }
@@ -266,128 +350,59 @@ export const Room = ({
             <style>{`
                 @import url('https://fonts.googleapis.com/css2?family=Syne:wght@400;700;800&family=DM+Sans:wght@300;400;500&display=swap');
                 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-                .room-root {
-                    height: 100vh; background: #080810;
-                    font-family: 'DM Sans', sans-serif;
-                    display: flex; flex-direction: column; overflow: hidden; position: relative;
-                }
+                .room-root { height: 100vh; background: #080810; font-family: 'DM Sans', sans-serif; display: flex; flex-direction: column; overflow: hidden; position: relative; }
                 .room-bg-orb { position: absolute; border-radius: 50%; filter: blur(100px); opacity: 0.15; pointer-events: none; }
                 .room-orb-1 { width: 600px; height: 600px; background: radial-gradient(circle, #ff4d6d, transparent); top: -200px; left: -200px; }
                 .room-orb-2 { width: 500px; height: 500px; background: radial-gradient(circle, #7b2fff, transparent); bottom: -200px; right: -200px; }
-                .room-header {
-                    position: relative; z-index: 10; flex-shrink: 0;
-                    display: flex; align-items: center; justify-content: space-between;
-                    padding: 16px 32px; border-bottom: 1px solid rgba(255,255,255,0.06);
-                }
-                .room-logo {
-                    font-family: 'Syne', sans-serif; font-size: 22px; font-weight: 800;
-                    background: linear-gradient(135deg, #ff4d6d, #c77dff);
-                    -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text;
-                }
-                .room-user-badge {
-                    display: flex; align-items: center; gap: 8px;
-                    background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.08);
-                    border-radius: 20px; padding: 6px 14px; font-size: 13px; color: rgba(255,255,255,0.7);
-                }
-                .user-avatar {
-                    width: 24px; height: 24px; border-radius: 50%;
-                    background: linear-gradient(135deg, #ff4d6d, #c77dff);
-                    display: flex; align-items: center; justify-content: center;
-                    font-size: 11px; font-weight: 700; color: #fff; font-family: 'Syne', sans-serif;
-                }
-                .main-area { position: relative; z-index: 10; flex: 1; display: flex; overflow: hidden; }
-                .videos-area {
-                    flex: 1; display: flex; flex-direction: column;
-                    align-items: center; justify-content: center;
-                    padding: 20px; gap: 16px; overflow: hidden;
-                }
-                .videos-row { display: flex; gap: 16px; width: 100%; justify-content: center; }
-                .video-card {
-                    position: relative; border-radius: 20px; overflow: hidden;
-                    background: #0d0d1a; border: 1px solid rgba(255,255,255,0.08);
-                    box-shadow: 0 20px 60px rgba(0,0,0,0.5);
-                    flex: 1; max-width: 480px; aspect-ratio: 4/3;
-                }
+                .room-header { position: relative; z-index: 10; flex-shrink: 0; display: flex; align-items: center; justify-content: space-between; padding: 16px 32px; border-bottom: 1px solid rgba(255,255,255,0.06); }
+                .room-logo { font-family: 'Syne', sans-serif; font-size: 22px; font-weight: 800; background: linear-gradient(135deg, #ff4d6d, #c77dff); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text; }
+                .header-right { display: flex; align-items: center; gap: 12px; }
+                .online-badge { display: flex; align-items: center; gap: 6px; background: rgba(34,197,94,0.1); border: 1px solid rgba(34,197,94,0.25); border-radius: 20px; padding: 5px 12px; font-size: 12px; color: #22c55e; }
+                .online-dot { width: 6px; height: 6px; border-radius: 50%; background: #22c55e; box-shadow: 0 0 6px #22c55e; animation: pulse 2s ease-in-out infinite; }
+                .room-user-badge { display: flex; align-items: center; gap: 8px; background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.08); border-radius: 20px; padding: 6px 14px; font-size: 13px; color: rgba(255,255,255,0.7); }
+                .user-avatar { width: 24px; height: 24px; border-radius: 50%; background: linear-gradient(135deg, #ff4d6d, #c77dff); display: flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 700; color: #fff; font-family: 'Syne', sans-serif; }
+                .main-area { position: relative; z-index: 10; flex: 1; display: flex; overflow: hidden; min-height: 0; }
+                .left-panel { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
+
+                /* Video mode */
+                .videos-area { flex: 1; min-height: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 20px; gap: 16px; overflow: hidden; }
+                .videos-row { display: flex; gap: 16px; width: 100%; justify-content: center; min-height: 0; }
+                .video-card { position: relative; border-radius: 20px; overflow: hidden; background: #0d0d1a; border: 1px solid rgba(255,255,255,0.08); box-shadow: 0 20px 60px rgba(0,0,0,0.5); flex: 1; max-width: 480px; aspect-ratio: 4/3; }
                 .video-card video { width: 100%; height: 100%; object-fit: cover; }
                 .video-card.local video { transform: scaleX(-1); }
-                .cam-off-overlay {
-                    position: absolute; inset: 0;
-                    display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px;
-                    background: #0d0d1a;
-                }
-                .cam-off-icon {
-                    width: 48px; height: 48px; border-radius: 50%;
-                    background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.1);
-                    display: flex; align-items: center; justify-content: center;
-                }
+                .cam-off-overlay { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; background: #0d0d1a; }
+                .cam-off-icon { width: 48px; height: 48px; border-radius: 50%; background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.1); display: flex; align-items: center; justify-content: center; }
                 .cam-off-icon svg { width: 22px; height: 22px; color: rgba(255,255,255,0.3); }
                 .cam-off-text { font-size: 12px; color: rgba(255,255,255,0.25); }
-                .video-card-label {
-                    position: absolute; bottom: 12px; left: 12px;
-                    display: flex; align-items: center; gap: 6px;
-                    background: rgba(0,0,0,0.6); backdrop-filter: blur(10px);
-                    border: 1px solid rgba(255,255,255,0.1); border-radius: 20px;
-                    padding: 4px 10px; font-size: 11px; color: rgba(255,255,255,0.85);
-                }
-                .label-dot {
-                    width: 6px; height: 6px; border-radius: 50%;
-                    background: #22c55e; box-shadow: 0 0 6px #22c55e;
-                    animation: pulse 2s ease-in-out infinite;
-                }
+                .video-card-label { position: absolute; bottom: 12px; left: 12px; display: flex; align-items: center; gap: 6px; background: rgba(0,0,0,0.6); backdrop-filter: blur(10px); border: 1px solid rgba(255,255,255,0.1); border-radius: 20px; padding: 4px 10px; font-size: 11px; color: rgba(255,255,255,0.85); }
+                .label-dot { width: 6px; height: 6px; border-radius: 50%; background: #22c55e; box-shadow: 0 0 6px #22c55e; animation: pulse 2s ease-in-out infinite; }
                 @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
-                .lobby-overlay {
-                    position: absolute; inset: 0;
-                    display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 16px;
-                    background: rgba(8,8,16,0.85); backdrop-filter: blur(8px);
-                }
-                .lobby-spinner {
-                    width: 40px; height: 40px;
-                    border: 3px solid rgba(255,255,255,0.08); border-top-color: #c77dff;
-                    border-radius: 50%; animation: spin 0.9s linear infinite;
-                }
+                .lobby-overlay { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 16px; background: rgba(8,8,16,0.85); backdrop-filter: blur(8px); }
+                .lobby-spinner { width: 40px; height: 40px; border: 3px solid rgba(255,255,255,0.08); border-top-color: #c77dff; border-radius: 50%; animation: spin 0.9s linear infinite; }
                 @keyframes spin { to { transform: rotate(360deg); } }
                 .lobby-text { font-size: 14px; color: rgba(255,255,255,0.5); }
                 .lobby-subtext { font-size: 12px; color: rgba(255,255,255,0.25); }
-                .connected-tag {
-                    position: absolute; top: 12px; right: 12px;
-                    display: flex; align-items: center; gap: 6px;
-                    background: rgba(34,197,94,0.15); border: 1px solid rgba(34,197,94,0.3);
-                    border-radius: 20px; padding: 4px 10px; font-size: 11px; color: #22c55e;
-                }
-                .controls-bar {
-                    flex-shrink: 0; display: flex; align-items: center; justify-content: center;
-                    padding: 14px 32px; border-top: 1px solid rgba(255,255,255,0.06); gap: 10px;
-                }
-                .next-btn {
-                    display: flex; align-items: center; gap: 8px;
-                    background: linear-gradient(135deg, #ff4d6d, #c77dff);
-                    border: none; border-radius: 12px; padding: 11px 24px;
-                    font-size: 14px; font-weight: 500; font-family: 'DM Sans', sans-serif;
-                    color: #fff; cursor: pointer; transition: all 0.2s;
-                }
+                .connected-tag { position: absolute; top: 12px; right: 12px; display: flex; align-items: center; gap: 6px; background: rgba(34,197,94,0.15); border: 1px solid rgba(34,197,94,0.3); border-radius: 20px; padding: 4px 10px; font-size: 11px; color: #22c55e; }
+
+                /* Text-only mode */
+                .text-only-area { flex: 1; min-height: 0; display: flex; align-items: center; justify-content: center; padding: 20px; }
+                .text-only-card { width: 100%; max-width: 500px; background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08); border-radius: 20px; padding: 32px; display: flex; flex-direction: column; align-items: center; gap: 12px; }
+                .text-only-icon { font-size: 48px; }
+                .text-only-name { font-family: 'Syne', sans-serif; font-size: 18px; font-weight: 700; color: #fff; }
+                .text-only-sub { font-size: 13px; color: rgba(255,255,255,0.3); }
+                .text-only-searching { display: flex; flex-direction: column; align-items: center; gap: 12px; }
+
+                .controls-bar { flex-shrink: 0; display: flex; align-items: center; justify-content: center; padding: 14px 32px; border-top: 1px solid rgba(255,255,255,0.06); gap: 10px; }
+                .next-btn { display: flex; align-items: center; gap: 8px; background: linear-gradient(135deg, #ff4d6d, #c77dff); border: none; border-radius: 12px; padding: 11px 24px; font-size: 14px; font-weight: 500; font-family: 'DM Sans', sans-serif; color: #fff; cursor: pointer; transition: all 0.2s; }
                 .next-btn:hover { transform: translateY(-1px); box-shadow: 0 8px 30px rgba(255,77,109,0.35); }
                 .next-btn:active { transform: translateY(0); }
                 .next-btn svg { width: 15px; height: 15px; }
-                .icon-btn {
-                    width: 42px; height: 42px; border-radius: 12px; border: none; cursor: pointer;
-                    display: flex; align-items: center; justify-content: center;
-                    transition: all 0.2s; flex-shrink: 0;
-                    background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.1);
-                    color: rgba(255,255,255,0.7);
-                }
+                .icon-btn { width: 42px; height: 42px; border-radius: 12px; border: none; cursor: pointer; display: flex; align-items: center; justify-content: center; transition: all 0.2s; flex-shrink: 0; background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.1); color: rgba(255,255,255,0.7); }
                 .icon-btn:hover { background: rgba(255,255,255,0.1); transform: translateY(-1px); }
                 .icon-btn:active { transform: translateY(0); }
-                .icon-btn.active {
-                    background: rgba(255,80,80,0.15); border-color: rgba(255,80,80,0.3); color: #ff6b6b;
-                }
+                .icon-btn.active { background: rgba(255,80,80,0.15); border-color: rgba(255,80,80,0.3); color: #ff6b6b; }
                 .icon-btn svg { width: 18px; height: 18px; }
-                .report-btn {
-                    display: flex; align-items: center; gap: 8px;
-                    background: rgba(255,255,255,0.05); border: 1px solid rgba(255,80,80,0.3);
-                    border-radius: 12px; padding: 11px 18px;
-                    font-size: 14px; font-weight: 500; font-family: 'DM Sans', sans-serif;
-                    color: #ff6b6b; cursor: pointer; transition: all 0.2s;
-                }
+                .report-btn { display: flex; align-items: center; gap: 8px; background: rgba(255,255,255,0.05); border: 1px solid rgba(255,80,80,0.3); border-radius: 12px; padding: 11px 18px; font-size: 14px; font-weight: 500; font-family: 'DM Sans', sans-serif; color: #ff6b6b; cursor: pointer; transition: all 0.2s; }
                 .report-btn:hover { background: rgba(255,80,80,0.1); border-color: rgba(255,80,80,0.6); transform: translateY(-1px); }
                 .report-btn:active { transform: translateY(0); }
                 .report-btn:disabled { opacity: 0.4; cursor: not-allowed; transform: none; }
@@ -395,61 +410,42 @@ export const Room = ({
                 .controls-divider { width: 1px; height: 24px; background: rgba(255,255,255,0.08); margin: 0 4px; }
 
                 /* Chat panel */
-                .chat-panel {
-                    width: 300px; flex-shrink: 0; display: flex; flex-direction: column;
-                    border-left: 1px solid rgba(255,255,255,0.06); background: rgba(255,255,255,0.02);
-                }
-                .chat-header {
-                    padding: 16px 20px; border-bottom: 1px solid rgba(255,255,255,0.06);
-                    font-size: 12px; font-weight: 500; letter-spacing: 1px;
-                    text-transform: uppercase; color: rgba(255,255,255,0.3);
-                }
-                .chat-messages {
-                    flex: 1; overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 10px;
-                }
+                .chat-panel { width: 300px; flex-shrink: 0; display: flex; flex-direction: column; min-height: 0; border-left: 1px solid rgba(255,255,255,0.06); background: rgba(255,255,255,0.02); overflow: hidden; }
+                .chat-header { flex-shrink: 0; padding: 16px 20px; border-bottom: 1px solid rgba(255,255,255,0.06); font-size: 12px; font-weight: 500; letter-spacing: 1px; text-transform: uppercase; color: rgba(255,255,255,0.3); }
+                .chat-messages { flex: 1; min-height: 0; overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 10px; }
                 .chat-messages::-webkit-scrollbar { width: 4px; }
-                .chat-messages::-webkit-scrollbar-track { background: transparent; }
                 .chat-messages::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 4px; }
-                .chat-empty {
-                    flex: 1; display: flex; align-items: center; justify-content: center;
-                    font-size: 13px; color: rgba(255,255,255,0.2); text-align: center; padding: 20px;
-                }
+                .chat-empty { display: flex; align-items: center; justify-content: center; font-size: 13px; color: rgba(255,255,255,0.2); text-align: center; padding: 20px; flex: 1; }
                 .chat-msg { display: flex; flex-direction: column; gap: 2px; max-width: 85%; }
                 .chat-msg.you { align-self: flex-end; align-items: flex-end; }
                 .chat-msg.stranger { align-self: flex-start; align-items: flex-start; }
+                .chat-msg.system { align-self: center; align-items: center; max-width: 100%; }
                 .chat-bubble { padding: 8px 12px; border-radius: 14px; font-size: 13px; line-height: 1.4; word-break: break-word; }
                 .chat-msg.you .chat-bubble { background: linear-gradient(135deg, #ff4d6d, #c77dff); color: #fff; border-bottom-right-radius: 4px; }
                 .chat-msg.stranger .chat-bubble { background: rgba(255,255,255,0.08); color: rgba(255,255,255,0.85); border: 1px solid rgba(255,255,255,0.08); border-bottom-left-radius: 4px; }
+                .chat-msg.system .chat-bubble { background: transparent; color: rgba(255,255,255,0.25); font-size: 11px; border: none; padding: 2px 8px; }
                 .chat-time { font-size: 10px; color: rgba(255,255,255,0.25); padding: 0 4px; }
-                .chat-input-area {
-                    padding: 12px 16px; border-top: 1px solid rgba(255,255,255,0.06);
-                    display: flex; gap: 8px; align-items: center;
-                }
-                .chat-input {
-                    flex: 1; background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.08);
-                    border-radius: 10px; padding: 9px 12px; font-size: 13px;
-                    color: #fff; font-family: 'DM Sans', sans-serif; outline: none; transition: all 0.2s;
-                }
+
+                /* Typing indicator */
+                .typing-indicator { display: flex; align-items: center; gap: 8px; padding: 4px 0; }
+                .typing-dots { display: flex; gap: 3px; }
+                .typing-dot { width: 5px; height: 5px; border-radius: 50%; background: rgba(255,255,255,0.4); animation: typingBounce 1.2s ease-in-out infinite; }
+                .typing-dot:nth-child(2) { animation-delay: 0.2s; }
+                .typing-dot:nth-child(3) { animation-delay: 0.4s; }
+                @keyframes typingBounce { 0%, 60%, 100% { transform: translateY(0); opacity: 0.4; } 30% { transform: translateY(-4px); opacity: 1; } }
+                .typing-text { font-size: 11px; color: rgba(255,255,255,0.3); }
+
+                .chat-input-area { flex-shrink: 0; padding: 12px 16px; border-top: 1px solid rgba(255,255,255,0.06); display: flex; gap: 8px; align-items: center; }
+                .chat-input { flex: 1; background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.08); border-radius: 10px; padding: 9px 12px; font-size: 13px; color: #fff; font-family: 'DM Sans', sans-serif; outline: none; transition: all 0.2s; }
                 .chat-input::placeholder { color: rgba(255,255,255,0.2); }
                 .chat-input:focus { border-color: rgba(199,125,255,0.4); background: rgba(255,255,255,0.07); }
                 .chat-input:disabled { opacity: 0.4; cursor: not-allowed; }
-                .chat-send-btn {
-                    width: 34px; height: 34px; border-radius: 10px; border: none; cursor: pointer;
-                    background: linear-gradient(135deg, #ff4d6d, #c77dff);
-                    display: flex; align-items: center; justify-content: center; transition: all 0.2s; flex-shrink: 0;
-                }
+                .chat-send-btn { width: 34px; height: 34px; border-radius: 10px; border: none; cursor: pointer; background: linear-gradient(135deg, #ff4d6d, #c77dff); display: flex; align-items: center; justify-content: center; transition: all 0.2s; flex-shrink: 0; }
                 .chat-send-btn:hover { transform: scale(1.05); }
                 .chat-send-btn:active { transform: scale(0.95); }
                 .chat-send-btn:disabled { opacity: 0.4; cursor: not-allowed; transform: none; }
                 .chat-send-btn svg { width: 14px; height: 14px; color: #fff; }
-                .abuse-banner {
-                    position: fixed; top: 24px; left: 50%; transform: translateX(-50%);
-                    z-index: 100; display: flex; align-items: center; gap: 10px;
-                    background: rgba(255,50,50,0.15); border: 1px solid rgba(255,50,50,0.4);
-                    backdrop-filter: blur(12px); border-radius: 12px;
-                    padding: 12px 20px; font-size: 13px; color: #ff8080;
-                    animation: slideDown 0.3s cubic-bezier(0.16,1,0.3,1);
-                }
+                .abuse-banner { position: fixed; top: 24px; left: 50%; transform: translateX(-50%); z-index: 100; display: flex; align-items: center; gap: 10px; background: rgba(255,50,50,0.15); border: 1px solid rgba(255,50,50,0.4); backdrop-filter: blur(12px); border-radius: 12px; padding: 12px 20px; font-size: 13px; color: #ff8080; animation: slideDown 0.3s cubic-bezier(0.16,1,0.3,1); }
                 @keyframes slideDown { from { opacity: 0; transform: translateX(-50%) translateY(-10px); } to { opacity: 1; transform: translateX(-50%) translateY(0); } }
                 @media (max-width: 900px) { .chat-panel { display: none; } }
             `}</style>
@@ -458,97 +454,113 @@ export const Room = ({
                 <div className="room-bg-orb room-orb-1" />
                 <div className="room-bg-orb room-orb-2" />
 
-                {abuseWarning && (
-                    <div className="abuse-banner"><span>⚠️</span> {abuseWarning}</div>
-                )}
+                {abuseWarning && <div className="abuse-banner"><span>⚠️</span> {abuseWarning}</div>}
 
                 <header className="room-header">
                     <div className="room-logo">LoneChat</div>
-                    <div className="room-user-badge">
-                        <div className="user-avatar">{name.charAt(0).toUpperCase()}</div>
-                        {name}
+                    <div className="header-right">
+                        {onlineCount !== null && (
+                            <div className="online-badge">
+                                <div className="online-dot" />
+                                {onlineCount} online
+                            </div>
+                        )}
+                        <div className="room-user-badge">
+                            <div className="user-avatar">{name.charAt(0).toUpperCase()}</div>
+                            {name}
+                        </div>
                     </div>
                 </header>
 
                 <div className="main-area">
-                    <div style={{ display: "flex", flexDirection: "column", flex: 1, overflow: "hidden" }}>
-                        <div className="videos-area">
-                            <div className="videos-row">
-                                <div className="video-card remote">
-                                    <video autoPlay ref={remoteVideoRef} />
-                                    {!lobby && <div className="connected-tag"><div className="label-dot" />Connected</div>}
-                                    <div className="video-card-label"><div className="label-dot" />Stranger</div>
-                                    {lobby && (
-                                        <div className="lobby-overlay">
+                    <div className="left-panel">
+                        {textOnly ? (
+                            /* Text-only mode: no video cards */
+                            <div className="text-only-area">
+                                <div className="text-only-card">
+                                    {lobby ? (
+                                        <div className="text-only-searching">
                                             <div className="lobby-spinner" />
-                                            <div className="lobby-text">Finding someone...</div>
-                                            <div className="lobby-subtext">This may take a moment</div>
+                                            <div className="lobby-text">Finding someone to chat with...</div>
+                                            <div className="lobby-subtext">Text only mode</div>
                                         </div>
+                                    ) : (
+                                        <>
+                                            <div className="text-only-icon">💬</div>
+                                            <div className="text-only-name">Stranger</div>
+                                            <div className="text-only-sub">Connected · Text only</div>
+                                        </>
                                     )}
-                                </div>
-                                <div className="video-card local">
-                                    <video autoPlay ref={localVideoRef} muted style={{ opacity: isCamOff ? 0 : 1 }} />
-                                    {isCamOff && (
-                                        <div className="cam-off-overlay">
-                                            <div className="cam-off-icon">
-                                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                                                    <line x1="1" y1="1" x2="23" y2="23"/>
-                                                    <path d="M21 21H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h3m3-3h6l2 3h4a2 2 0 0 1 2 2v9.34"/>
-                                                </svg>
-                                            </div>
-                                            <div className="cam-off-text">Camera off</div>
-                                        </div>
-                                    )}
-                                    <div className="video-card-label"><div className="label-dot" />You · {name}</div>
                                 </div>
                             </div>
-                        </div>
+                        ) : (
+                            /* Video mode */
+                            <div className="videos-area">
+                                <div className="videos-row">
+                                    <div className="video-card remote">
+                                        <video autoPlay ref={remoteVideoRef} />
+                                        {!lobby && <div className="connected-tag"><div className="label-dot" />Connected</div>}
+                                        <div className="video-card-label"><div className="label-dot" />Stranger</div>
+                                        {lobby && (
+                                            <div className="lobby-overlay">
+                                                <div className="lobby-spinner" />
+                                                <div className="lobby-text">Finding someone...</div>
+                                                <div className="lobby-subtext">This may take a moment</div>
+                                            </div>
+                                        )}
+                                    </div>
+                                    <div className="video-card local">
+                                        <video autoPlay ref={localVideoRef} muted style={{ opacity: isCamOff ? 0 : 1 }} />
+                                        {isCamOff && (
+                                            <div className="cam-off-overlay">
+                                                <div className="cam-off-icon">
+                                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                                        <line x1="1" y1="1" x2="23" y2="23"/>
+                                                        <path d="M21 21H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h3m3-3h6l2 3h4a2 2 0 0 1 2 2v9.34"/>
+                                                    </svg>
+                                                </div>
+                                                <div className="cam-off-text">Camera off</div>
+                                            </div>
+                                        )}
+                                        <div className="video-card-label"><div className="label-dot" />You · {name}</div>
+                                    </div>
+                                </div>
+                            </div>
+                        )}
 
                         <div className="controls-bar">
-                            {/* Mute button */}
-                            <button
-                                className={`icon-btn ${isMuted ? "active" : ""}`}
-                                onClick={toggleMute}
-                                title={isMuted ? "Unmute" : "Mute"}
-                            >
-                                {isMuted ? (
-                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                                        <line x1="1" y1="1" x2="23" y2="23"/>
-                                        <path d="M9 9v3a3 3 0 0 0 5.12 2.12M15 9.34V4a3 3 0 0 0-5.94-.6"/>
-                                        <path d="M17 16.95A7 7 0 0 1 5 12v-2m14 0v2a7 7 0 0 1-.11 1.23"/>
-                                        <line x1="12" y1="19" x2="12" y2="23"/>
-                                        <line x1="8" y1="23" x2="16" y2="23"/>
-                                    </svg>
-                                ) : (
-                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                                        <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/>
-                                        <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
-                                        <line x1="12" y1="19" x2="12" y2="23"/>
-                                        <line x1="8" y1="23" x2="16" y2="23"/>
-                                    </svg>
-                                )}
-                            </button>
-
-                            {/* Camera toggle button */}
-                            <button
-                                className={`icon-btn ${isCamOff ? "active" : ""}`}
-                                onClick={toggleCamera}
-                                title={isCamOff ? "Turn camera on" : "Turn camera off"}
-                            >
-                                {isCamOff ? (
-                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                                        <line x1="1" y1="1" x2="23" y2="23"/>
-                                        <path d="M21 21H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h3m3-3h6l2 3h4a2 2 0 0 1 2 2v9.34"/>
-                                    </svg>
-                                ) : (
-                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                                        <path d="M23 7l-7 5 7 5V7z"/>
-                                        <rect x="1" y="5" width="15" height="14" rx="2" ry="2"/>
-                                    </svg>
-                                )}
-                            </button>
-
-                            <div className="controls-divider" />
+                            {!textOnly && (
+                                <>
+                                    <button className={`icon-btn ${isMuted ? "active" : ""}`} onClick={toggleMute} title={isMuted ? "Unmute" : "Mute"}>
+                                        {isMuted ? (
+                                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                                <line x1="1" y1="1" x2="23" y2="23"/><path d="M9 9v3a3 3 0 0 0 5.12 2.12M15 9.34V4a3 3 0 0 0-5.94-.6"/>
+                                                <path d="M17 16.95A7 7 0 0 1 5 12v-2m14 0v2a7 7 0 0 1-.11 1.23"/>
+                                                <line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/>
+                                            </svg>
+                                        ) : (
+                                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                                <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/>
+                                                <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
+                                                <line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/>
+                                            </svg>
+                                        )}
+                                    </button>
+                                    <button className={`icon-btn ${isCamOff ? "active" : ""}`} onClick={toggleCamera} title={isCamOff ? "Turn camera on" : "Turn camera off"}>
+                                        {isCamOff ? (
+                                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                                <line x1="1" y1="1" x2="23" y2="23"/>
+                                                <path d="M21 21H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h3m3-3h6l2 3h4a2 2 0 0 1 2 2v9.34"/>
+                                            </svg>
+                                        ) : (
+                                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                                <path d="M23 7l-7 5 7 5V7z"/><rect x="1" y="5" width="15" height="14" rx="2" ry="2"/>
+                                            </svg>
+                                        )}
+                                    </button>
+                                    <div className="controls-divider" />
+                                </>
+                            )}
 
                             <button className="next-btn" onClick={handleNext}>
                                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -575,15 +587,25 @@ export const Room = ({
                         <div className="chat-messages">
                             {messages.length === 0 && (
                                 <div className="chat-empty">
-                                    {lobby ? "Connect to someone to start chatting" : "Say hi to your new stranger! 👋"}
+                                    {lobby ? "Searching for a stranger..." : "Say hi to your new stranger! 👋"}
                                 </div>
                             )}
                             {messages.map((msg, i) => (
                                 <div key={i} className={`chat-msg ${msg.from}`}>
                                     <div className="chat-bubble">{msg.text}</div>
-                                    <div className="chat-time">{msg.time}</div>
+                                    {msg.from !== "system" && <div className="chat-time">{msg.time}</div>}
                                 </div>
                             ))}
+                            {strangerTyping && (
+                                <div className="typing-indicator">
+                                    <div className="typing-dots">
+                                        <div className="typing-dot" />
+                                        <div className="typing-dot" />
+                                        <div className="typing-dot" />
+                                    </div>
+                                    <div className="typing-text">Stranger is typing...</div>
+                                </div>
+                            )}
                             <div ref={chatBottomRef} />
                         </div>
                         <div className="chat-input-area">
@@ -594,7 +616,7 @@ export const Room = ({
                                 placeholder={lobby ? "Waiting for connection..." : "Type a message..."}
                                 value={chatInput}
                                 disabled={lobby}
-                                onChange={(e) => setChatInput(e.target.value)}
+                                onChange={(e) => handleTyping(e.target.value)}
                                 onKeyDown={(e) => e.key === "Enter" && sendMessage()}
                             />
                             <button className="chat-send-btn" onClick={sendMessage} disabled={lobby || !chatInput.trim()}>
