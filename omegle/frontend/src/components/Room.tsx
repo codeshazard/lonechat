@@ -14,6 +14,43 @@ const FALLBACK_ICE_CONFIG = {
     ]
 };
 
+// Conversation starters shown when two users connect
+const CONVERSATION_STARTERS = [
+    "🎯 Icebreaker: Would you rather explore space or the deep ocean?",
+    "🎯 Icebreaker: What's the last show you binge-watched?",
+    "🎯 Icebreaker: If you could live in any country, where would you go?",
+    "🎯 Icebreaker: What's your most controversial food opinion?",
+    "🎯 Icebreaker: Would you rather have no internet for a week or no phone?",
+    "🎯 Icebreaker: What skill do you wish you had?",
+    "🎯 Icebreaker: Morning person or night owl?",
+    "🎯 Icebreaker: What's the best piece of advice you've ever received?",
+    "🎯 Icebreaker: If you could meet anyone from history, who would it be?",
+    "🎯 Icebreaker: What's something you're really good at that surprises people?",
+];
+
+const getRandomStarter = () =>
+    CONVERSATION_STARTERS[Math.floor(Math.random() * CONVERSATION_STARTERS.length)];
+
+// Play a soft chime sound using Web Audio API
+const playMatchSound = () => {
+    try {
+        const ctx = new (window.AudioContext || (window as any).webkitAudioContext)();
+        const oscillator = ctx.createOscillator();
+        const gainNode = ctx.createGain();
+        oscillator.connect(gainNode);
+        gainNode.connect(ctx.destination);
+        oscillator.type = "sine";
+        oscillator.frequency.setValueAtTime(880, ctx.currentTime);
+        oscillator.frequency.exponentialRampToValueAtTime(440, ctx.currentTime + 0.3);
+        gainNode.gain.setValueAtTime(0.3, ctx.currentTime);
+        gainNode.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.5);
+        oscillator.start(ctx.currentTime);
+        oscillator.stop(ctx.currentTime + 0.5);
+    } catch (_e) {
+        // Audio not supported, silently ignore
+    }
+};
+
 interface ChatMessage {
     from: "you" | "stranger" | "system";
     text: string;
@@ -75,21 +112,21 @@ export const Room = ({
     };
 
     const fetchIceConfig = useCallback(async () => {
-    try {
-        const res = await fetch(`${BACKEND_URL}/ice-servers`);
-        const data = await res.json();
-        if (Array.isArray(data)) {
-            iceConfigRef.current = { iceServers: data };
-        } else if (data.iceServers && Array.isArray(data.iceServers)) {
-            iceConfigRef.current = { iceServers: data.iceServers };
-        } else {
+        try {
+            const res = await fetch(`${BACKEND_URL}/ice-servers`);
+            const data = await res.json();
+            if (Array.isArray(data)) {
+                iceConfigRef.current = { iceServers: data };
+            } else if (data.iceServers && Array.isArray(data.iceServers)) {
+                iceConfigRef.current = { iceServers: data.iceServers };
+            } else {
+                iceConfigRef.current = FALLBACK_ICE_CONFIG;
+            }
+            console.log("ICE config loaded:", iceConfigRef.current);
+        } catch (err) {
+            console.warn("Failed to fetch ICE config, using fallback:", err);
             iceConfigRef.current = FALLBACK_ICE_CONFIG;
         }
-        console.log("ICE config loaded:", iceConfigRef.current);
-    } catch (err) {
-        console.warn("Failed to fetch ICE config, using fallback:", err);
-        iceConfigRef.current = FALLBACK_ICE_CONFIG;
-    }
     }, []);
 
     const toggleMute = useCallback(() => {
@@ -172,7 +209,7 @@ export const Room = ({
     }, [cleanupPeerConnections, reportCooldown]);
 
     const startAbuseDetection = useCallback(() => {
-        if (textOnly) return; // no video to check in text-only mode
+        if (textOnly) return;
         if (abuseCheckInterval.current) clearInterval(abuseCheckInterval.current);
         setTimeout(() => checkForAbuse(), 3000);
         abuseCheckInterval.current = setInterval(checkForAbuse, 10000);
@@ -184,7 +221,6 @@ export const Room = ({
         socketRef.current?.emit("chat-message", { message: text });
         setMessages(prev => [...prev, { from: "you", text, time: getTime() }]);
         setChatInput("");
-        // stop typing indicator when message sent
         if (isTypingRef.current) {
             socketRef.current?.emit("typing-stop");
             isTypingRef.current = false;
@@ -210,6 +246,17 @@ export const Room = ({
             isTypingRef.current = false;
         }
     }, []);
+
+    // ESC key → skip to next stranger
+    useEffect(() => {
+        const handleKeyDown = (e: KeyboardEvent) => {
+            if (e.key === "Escape") {
+                handleNext();
+            }
+        };
+        window.addEventListener("keydown", handleKeyDown);
+        return () => window.removeEventListener("keydown", handleKeyDown);
+    }, [handleNext]);
 
     useEffect(() => {
         if (chatBottomRef.current && chatBottomRef.current.parentElement) {
@@ -246,11 +293,19 @@ export const Room = ({
 
         sock.on("online-count", (count: number) => setOnlineCount(count));
 
-        sock.on('send-offer', async ({ roomId }) => {
+        // Helper to fire on match — plays sound + adds system messages
+        const onMatched = () => {
             setLobbySync(false);
-            setMessages(prev => [...prev, { from: "system", text: "Stranger connected.", time: getTime() }]);
+            playMatchSound();
+            setMessages([
+                { from: "system", text: "Stranger connected.", time: getTime() },
+                { from: "system", text: getRandomStarter(), time: getTime() },
+            ]);
+        };
 
-            if (textOnly) return; // text-only: skip WebRTC entirely
+        sock.on('send-offer', async ({ roomId }) => {
+            onMatched();
+            if (textOnly) return;
 
             const pc = new RTCPeerConnection(iceConfigRef.current);
             sendingPcRef.current = pc;
@@ -270,10 +325,8 @@ export const Room = ({
         });
 
         sock.on("offer", async ({ roomId, sdp: remoteSdp }) => {
-            setLobbySync(false);
-            setMessages(prev => [...prev, { from: "system", text: "Stranger connected.", time: getTime() }]);
-
-            if (textOnly) return; // text-only: skip WebRTC entirely
+            onMatched();
+            if (textOnly) return;
 
             const pc = new RTCPeerConnection(iceConfigRef.current);
             receivingPcRef.current = pc;
@@ -363,8 +416,6 @@ export const Room = ({
                 .user-avatar { width: 24px; height: 24px; border-radius: 50%; background: linear-gradient(135deg, #ff4d6d, #c77dff); display: flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 700; color: #fff; font-family: 'Syne', sans-serif; }
                 .main-area { position: relative; z-index: 10; flex: 1; display: flex; overflow: hidden; min-height: 0; }
                 .left-panel { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
-
-                /* Video mode */
                 .videos-area { flex: 1; min-height: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 20px; gap: 16px; overflow: hidden; }
                 .videos-row { display: flex; gap: 16px; width: 100%; justify-content: center; min-height: 0; }
                 .video-card { position: relative; border-radius: 20px; overflow: hidden; background: #0d0d1a; border: 1px solid rgba(255,255,255,0.08); box-shadow: 0 20px 60px rgba(0,0,0,0.5); flex: 1; max-width: 480px; aspect-ratio: 4/3; }
@@ -383,16 +434,15 @@ export const Room = ({
                 .lobby-text { font-size: 14px; color: rgba(255,255,255,0.5); }
                 .lobby-subtext { font-size: 12px; color: rgba(255,255,255,0.25); }
                 .connected-tag { position: absolute; top: 12px; right: 12px; display: flex; align-items: center; gap: 6px; background: rgba(34,197,94,0.15); border: 1px solid rgba(34,197,94,0.3); border-radius: 20px; padding: 4px 10px; font-size: 11px; color: #22c55e; }
-
-                /* Text-only mode */
                 .text-only-area { flex: 1; min-height: 0; display: flex; align-items: center; justify-content: center; padding: 20px; }
                 .text-only-card { width: 100%; max-width: 500px; background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08); border-radius: 20px; padding: 32px; display: flex; flex-direction: column; align-items: center; gap: 12px; }
                 .text-only-icon { font-size: 48px; }
                 .text-only-name { font-family: 'Syne', sans-serif; font-size: 18px; font-weight: 700; color: #fff; }
                 .text-only-sub { font-size: 13px; color: rgba(255,255,255,0.3); }
                 .text-only-searching { display: flex; flex-direction: column; align-items: center; gap: 12px; }
-
                 .controls-bar { flex-shrink: 0; display: flex; align-items: center; justify-content: center; padding: 14px 32px; border-top: 1px solid rgba(255,255,255,0.06); gap: 10px; }
+                .esc-hint { font-size: 11px; color: rgba(255,255,255,0.2); display: flex; align-items: center; gap: 5px; }
+                .esc-key { background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.12); border-radius: 4px; padding: 2px 6px; font-size: 10px; color: rgba(255,255,255,0.4); font-family: monospace; }
                 .next-btn { display: flex; align-items: center; gap: 8px; background: linear-gradient(135deg, #ff4d6d, #c77dff); border: none; border-radius: 12px; padding: 11px 24px; font-size: 14px; font-weight: 500; font-family: 'DM Sans', sans-serif; color: #fff; cursor: pointer; transition: all 0.2s; }
                 .next-btn:hover { transform: translateY(-1px); box-shadow: 0 8px 30px rgba(255,77,109,0.35); }
                 .next-btn:active { transform: translateY(0); }
@@ -408,8 +458,6 @@ export const Room = ({
                 .report-btn:disabled { opacity: 0.4; cursor: not-allowed; transform: none; }
                 .report-btn svg { width: 14px; height: 14px; }
                 .controls-divider { width: 1px; height: 24px; background: rgba(255,255,255,0.08); margin: 0 4px; }
-
-                /* Chat panel */
                 .chat-panel { width: 300px; flex-shrink: 0; display: flex; flex-direction: column; min-height: 0; border-left: 1px solid rgba(255,255,255,0.06); background: rgba(255,255,255,0.02); overflow: hidden; }
                 .chat-header { flex-shrink: 0; padding: 16px 20px; border-bottom: 1px solid rgba(255,255,255,0.06); font-size: 12px; font-weight: 500; letter-spacing: 1px; text-transform: uppercase; color: rgba(255,255,255,0.3); }
                 .chat-messages { flex: 1; min-height: 0; overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 10px; }
@@ -423,10 +471,9 @@ export const Room = ({
                 .chat-bubble { padding: 8px 12px; border-radius: 14px; font-size: 13px; line-height: 1.4; word-break: break-word; }
                 .chat-msg.you .chat-bubble { background: linear-gradient(135deg, #ff4d6d, #c77dff); color: #fff; border-bottom-right-radius: 4px; }
                 .chat-msg.stranger .chat-bubble { background: rgba(255,255,255,0.08); color: rgba(255,255,255,0.85); border: 1px solid rgba(255,255,255,0.08); border-bottom-left-radius: 4px; }
-                .chat-msg.system .chat-bubble { background: transparent; color: rgba(255,255,255,0.25); font-size: 11px; border: none; padding: 2px 8px; }
+                .chat-msg.system .chat-bubble { background: transparent; color: rgba(255,255,255,0.25); font-size: 11px; border: none; padding: 2px 8px; text-align: center; }
+                .chat-msg.system.icebreaker .chat-bubble { background: rgba(199,125,255,0.08); border: 1px solid rgba(199,125,255,0.2); border-radius: 12px; color: rgba(199,125,255,0.8); font-size: 12px; padding: 8px 12px; }
                 .chat-time { font-size: 10px; color: rgba(255,255,255,0.25); padding: 0 4px; }
-
-                /* Typing indicator */
                 .typing-indicator { display: flex; align-items: center; gap: 8px; padding: 4px 0; }
                 .typing-dots { display: flex; gap: 3px; }
                 .typing-dot { width: 5px; height: 5px; border-radius: 50%; background: rgba(255,255,255,0.4); animation: typingBounce 1.2s ease-in-out infinite; }
@@ -434,7 +481,6 @@ export const Room = ({
                 .typing-dot:nth-child(3) { animation-delay: 0.4s; }
                 @keyframes typingBounce { 0%, 60%, 100% { transform: translateY(0); opacity: 0.4; } 30% { transform: translateY(-4px); opacity: 1; } }
                 .typing-text { font-size: 11px; color: rgba(255,255,255,0.3); }
-
                 .chat-input-area { flex-shrink: 0; padding: 12px 16px; border-top: 1px solid rgba(255,255,255,0.06); display: flex; gap: 8px; align-items: center; }
                 .chat-input { flex: 1; background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.08); border-radius: 10px; padding: 9px 12px; font-size: 13px; color: #fff; font-family: 'DM Sans', sans-serif; outline: none; transition: all 0.2s; }
                 .chat-input::placeholder { color: rgba(255,255,255,0.2); }
@@ -447,7 +493,7 @@ export const Room = ({
                 .chat-send-btn svg { width: 14px; height: 14px; color: #fff; }
                 .abuse-banner { position: fixed; top: 24px; left: 50%; transform: translateX(-50%); z-index: 100; display: flex; align-items: center; gap: 10px; background: rgba(255,50,50,0.15); border: 1px solid rgba(255,50,50,0.4); backdrop-filter: blur(12px); border-radius: 12px; padding: 12px 20px; font-size: 13px; color: #ff8080; animation: slideDown 0.3s cubic-bezier(0.16,1,0.3,1); }
                 @keyframes slideDown { from { opacity: 0; transform: translateX(-50%) translateY(-10px); } to { opacity: 1; transform: translateX(-50%) translateY(0); } }
-                @media (max-width: 900px) { .chat-panel { display: none; } }
+                @media (max-width: 900px) { .chat-panel { display: none; } .esc-hint { display: none; } }
             `}</style>
 
             <div className="room-root">
@@ -475,7 +521,6 @@ export const Room = ({
                 <div className="main-area">
                     <div className="left-panel">
                         {textOnly ? (
-                            /* Text-only mode: no video cards */
                             <div className="text-only-area">
                                 <div className="text-only-card">
                                     {lobby ? (
@@ -494,7 +539,6 @@ export const Room = ({
                                 </div>
                             </div>
                         ) : (
-                            /* Video mode */
                             <div className="videos-area">
                                 <div className="videos-row">
                                     <div className="video-card remote">
@@ -578,6 +622,12 @@ export const Room = ({
                                     Report
                                 </button>
                             )}
+
+                            {/* ESC hint */}
+                            <div className="esc-hint">
+                                <span className="esc-key">ESC</span>
+                                to skip
+                            </div>
                         </div>
                     </div>
 
@@ -591,10 +641,16 @@ export const Room = ({
                                 </div>
                             )}
                             {messages.map((msg, i) => (
-                                <div key={i} className={`chat-msg ${msg.from}`}>
-                                    <div className="chat-bubble">{msg.text}</div>
-                                    {msg.from !== "system" && <div className="chat-time">{msg.time}</div>}
-                                </div>
+                                msg.from === "system" ? (
+                                    <div key={i} className={`chat-msg system ${msg.text.startsWith("🎯") ? "icebreaker" : ""}`}>
+                                        <div className="chat-bubble">{msg.text}</div>
+                                    </div>
+                                ) : (
+                                    <div key={i} className={`chat-msg ${msg.from}`}>
+                                        <div className="chat-bubble">{msg.text}</div>
+                                        <div className="chat-time">{msg.time}</div>
+                                    </div>
+                                )
                             ))}
                             {strangerTyping && (
                                 <div className="typing-indicator">
