@@ -57,22 +57,43 @@ LoneChat is an anonymous real-time video and text chat platform that connects st
 
 ```
 lonechat/
+├── backend/
+│   ├── src/
+│   │   ├── config/              # Environment configurations & defaults
+│   │   ├── controllers/         # ICE & Stats endpoint controllers
+│   │   ├── middleware/          # Request logger & central error handler
+│   │   ├── models/              # User, room, and signaling types
+│   │   ├── routes/              # Express API route declarations
+│   │   ├── services/            # Presence, matchmaking, room, and TURN services
+│   │   ├── sockets/             # Socket.IO connection & event handlers
+│   │   ├── tests/               # Automated unit & integration test suites
+│   │   ├── utils/               # Logger utilities
+│   │   ├── app.ts               # Express app factory
+│   │   ├── server.ts            # HTTP & Socket.IO server startup
+│   │   └── index.ts             # Main entrypoint
+│   ├── .env.example
+│   ├── package.json
+│   └── tsconfig.json
+│
 ├── frontend/
 │   ├── src/
-│   │   ├── components/
-│   │   │   ├── Landing.tsx    # Landing page, consent screen, preferences
-│   │   │   └── Room.tsx       # Video/text chat room, WebRTC logic
+│   │   ├── components/          # Common, video, chat, controls, and modal components
+│   │   ├── config/              # Dynamic environment config & fallbacks
+│   │   ├── constants/           # Icebreaker starters & constants
+│   │   ├── hooks/               # useOnlineCount, useMediaStream hooks
+│   │   ├── pages/               # LandingPage & RoomPage
+│   │   ├── services/            # API client, socket client, sound & moderation services
+│   │   ├── styles/              # Design tokens, global, landing, and room CSS
+│   │   ├── types/               # TypeScript interfaces & types
+│   │   ├── utils/               # Persistent clientId and time utilities
 │   │   ├── App.tsx
 │   │   └── main.tsx
-│   └── .env                   # VITE_SIGHTENGINE_USER, VITE_SIGHTENGINE_SECRET
+│   ├── .env.example
+│   ├── package.json
+│   └── vite.config.ts
 │
-└── backend/
-    ├── src/
-    │   ├── managers/
-    │   │   ├── UserManger.ts  # Matchmaking, socket event handlers
-    │   │   └── RoomManager.ts # Room creation and WebRTC signaling
-    │   └── index.ts           # Express server, Socket.IO, ICE endpoint
-    └── .env                   # METERED_API_KEY, METERED_DOMAIN
+├── package.json                 # Unified workspace scripts
+└── README.md
 ```
 
 ---
@@ -81,14 +102,14 @@ lonechat/
 
 ### Prerequisites
 - Node.js v18+
-- A [Sightengine](https://sightengine.com) account (free tier: 2000 checks/month)
-- A [Metered.ca](https://metered.ca) account for TURN servers
+- A [Sightengine](https://sightengine.com) account (free tier: 2000 checks/month, optional)
+- A [Metered.ca](https://metered.ca) account for TURN servers (optional)
 
 ### 1. Clone the repository
 
 ```bash
 git clone https://github.com/codeshazard/lonechat.git
-cd lonechat/omegle
+cd lonechat
 ```
 
 ### 2. Backend setup

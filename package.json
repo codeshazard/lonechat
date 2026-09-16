@@ -1,0 +1,15 @@
+{
+  "name": "lonechat",
+  "version": "1.0.0",
+  "description": "LoneChat - Anonymous Real-time Video & Text Chat",
+  "private": true,
+  "scripts": {
+    "dev:backend": "npm --prefix backend run dev",
+    "dev:frontend": "npm --prefix frontend run dev",
+    "build": "npm --prefix backend run build && npm --prefix frontend run build",
+    "test": "npm --prefix backend test"
+  },
+  "keywords": ["webrtc", "socketio", "video-chat", "text-chat", "lonechat"],
+  "author": "Shaswat Shrestha",
+  "license": "ISC"
+}

@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32">
+  <defs>
+    <linearGradient id="loneGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#ff4d6d" />
+      <stop offset="100%" stop-color="#c77dff" />
+    </linearGradient>
+  </defs>
+  <rect width="32" height="32" rx="8" fill="#080811" />
+  <path d="M8 9C8 7.34315 9.34315 6 11 6H21C22.6569 6 24 7.34315 24 9V17C24 18.6569 22.6569 20 21 20H13L9 24V20H8C6.34315 20 5 18.6569 5 17V12" fill="url(#loneGrad)" />
+</svg>
