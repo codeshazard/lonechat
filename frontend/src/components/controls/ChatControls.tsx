@@ -72,12 +72,13 @@ export const ChatControls: React.FC<ChatControlsProps> = ({
                 </>
             )}
 
-            <button className="next-stranger-btn" onClick={onNext} title="Skip current match (or press ESC)">
+            <button className="next-stranger-btn" onClick={onNext} title="Skip current match (or press ESC)" aria-label="Next stranger">
                 <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
                     <polyline points="13 17 18 12 13 7" />
                     <polyline points="6 17 11 12 6 7" />
                 </svg>
-                <span>Next Stranger</span>
+                <span className="btn-label-desktop">Next Stranger</span>
+                <span className="btn-label-mobile">Next</span>
             </button>
 
             {!isLobby && (
@@ -86,6 +87,7 @@ export const ChatControls: React.FC<ChatControlsProps> = ({
                     onClick={onReport}
                     disabled={reportCooldown}
                     title="Report and block this user"
+                    aria-label="Report user"
                 >
                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                         <path d="M4 15s1-1 4-1 5 2 8 2 4-1 4-1V3s-1 1-4 1-5-2-8-2-4 1-4 1z" />

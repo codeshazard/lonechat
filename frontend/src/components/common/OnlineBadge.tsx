@@ -8,9 +8,10 @@ interface OnlineBadgeProps {
 export const OnlineBadge: React.FC<OnlineBadgeProps> = ({ count, className = "" }) => {
     if (count === null) {
         return (
-            <div className={`online-badge ${className}`}>
+            <div className={`online-badge ${className}`} title="Checking online users...">
                 <div className="online-dot" />
-                <span>Checking online users...</span>
+                <span className="badge-text-full">Checking online users...</span>
+                <span className="badge-text-short">Checking...</span>
             </div>
         );
     }
@@ -18,9 +19,10 @@ export const OnlineBadge: React.FC<OnlineBadgeProps> = ({ count, className = "" 
     const label = count === 1 ? "person online" : "people online";
 
     return (
-        <div className={`online-badge ${className}`}>
+        <div className={`online-badge ${className}`} title={`${count} ${label}`}>
             <div className="online-dot" />
-            <span>{count} {label}</span>
+            <span className="badge-text-full">{count} {label}</span>
+            <span className="badge-text-short">{count} online</span>
         </div>
     );
 };

@@ -26,7 +26,7 @@ export function useMediaStream(enabled: boolean) {
             setCamReady(true);
             setPermissionError(null);
             return stream;
-        } catch (err: any) {
+        } catch (err: unknown) {
             console.warn("Camera or microphone permission denied / unavailable:", err);
             setPermissionError("Camera or microphone access denied. You can still chat in Text-Only mode.");
             setCamReady(false);

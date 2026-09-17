@@ -34,7 +34,7 @@ export const RoomPage: React.FC<RoomProps> = ({
     const [isCamOff, setIsCamOff] = useState(false);
 
     // Mobile responsive tab ("video" | "chat")
-    const [mobileTab, setMobileTab] = useState<"video" | "chat">("video");
+    const [mobileTab, setMobileTab] = useState<"video" | "chat">(() => (textOnly ? "chat" : "video"));
     const [unreadMessages, setUnreadMessages] = useState(0);
 
     // Refs
@@ -426,7 +426,7 @@ export const RoomPage: React.FC<RoomProps> = ({
             socketRef.current = null;
             setCurrentSocket(null);
         };
-    }, [name, preferences, textOnly, cleanupPeerConnections, startAbuseMonitoring]);
+    }, [name, preferences, textOnly, localAudioTrack, localVideoTrack, cleanupPeerConnections, startAbuseMonitoring]);
 
     // Clear unread badge when switching to chat tab
     const handleSwitchMobileTab = (tab: "video" | "chat") => {
@@ -451,42 +451,54 @@ export const RoomPage: React.FC<RoomProps> = ({
 
             {/* Room Header */}
             <header className="room-header">
-                <div className="room-logo">LoneChat</div>
-
-                {/* Mobile View Switcher */}
-                <div className="mobile-view-tabs">
-                    <button
-                        className={`mobile-tab-btn ${mobileTab === "video" ? "active" : ""}`}
-                        onClick={() => handleSwitchMobileTab("video")}
-                    >
-                        {textOnly ? "💬 Chat Info" : "🎥 Video"}
-                    </button>
-                    <button
-                        className={`mobile-tab-btn ${mobileTab === "chat" ? "active" : ""}`}
-                        onClick={() => handleSwitchMobileTab("chat")}
-                    >
-                        <span>💬 Chat</span>
-                        {unreadMessages > 0 && <span className="mobile-unread-dot" />}
-                    </button>
-                </div>
-
-                <div className="room-header-right">
-                    {/* Real-time online counter */}
-                    <OnlineBadge count={onlineCount} />
-
-                    <div className="user-badge">
-                        <div className="user-avatar-circle">
-                            {name.charAt(0).toUpperCase()}
-                        </div>
-                        <span>{name}</span>
+                <div className="room-header-bar">
+                    <div className="room-header-left">
+                        <div className="room-logo">LoneChat</div>
+                        <OnlineBadge count={onlineCount} />
                     </div>
 
-                    {onLeave && (
-                        <button className="leave-btn" onClick={onLeave} title="Leave room">
-                            Leave
-                        </button>
-                    )}
+                    <div className="room-header-right">
+                        <div className="user-badge" title={name}>
+                            <div className="user-avatar-circle">
+                                {name.charAt(0).toUpperCase()}
+                            </div>
+                            <span className="user-name-text">{name}</span>
+                        </div>
+
+                        {onLeave && (
+                            <button className="leave-btn" onClick={onLeave} title="Leave room" aria-label="Leave room">
+                                Leave
+                            </button>
+                        )}
+                    </div>
                 </div>
+
+                {/* Mobile View Switcher (Only visible on mobile/tablet viewports) */}
+                {!textOnly && (
+                    <nav className="mobile-view-tabs" role="tablist" aria-label="Room views">
+                        <button
+                            role="tab"
+                            aria-selected={mobileTab === "video"}
+                            className={`mobile-tab-btn ${mobileTab === "video" ? "active" : ""}`}
+                            onClick={() => handleSwitchMobileTab("video")}
+                        >
+                            🎥 Video
+                        </button>
+                        <button
+                            role="tab"
+                            aria-selected={mobileTab === "chat"}
+                            className={`mobile-tab-btn ${mobileTab === "chat" ? "active" : ""}`}
+                            onClick={() => handleSwitchMobileTab("chat")}
+                        >
+                            <span>💬 Chat</span>
+                            {unreadMessages > 0 && (
+                                <span className="mobile-unread-badge" aria-label={`${unreadMessages} unread messages`}>
+                                    {unreadMessages > 9 ? "9+" : unreadMessages}
+                                </span>
+                            )}
+                        </button>
+                    </nav>
+                )}
             </header>
 
             {/* Main Area */}
@@ -558,6 +570,9 @@ export const RoomPage: React.FC<RoomProps> = ({
                     onSendMessage={handleSendMessage}
                     isStrangerTyping={isStrangerTyping}
                     isLobby={isLobby}
+                    onNext={handleNext}
+                    onReport={handleReport}
+                    reportCooldown={reportCooldown}
                 />
             </div>
         </div>

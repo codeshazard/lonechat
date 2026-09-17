@@ -49,7 +49,9 @@ export const LandingPage: React.FC = () => {
     const handleAcceptConsent = () => {
         try {
             localStorage.setItem(CONSENT_STORAGE_KEY, "true");
-        } catch {}
+        } catch {
+            // Ignore storage access issues
+        }
         setHasConsented(true);
     };
 
