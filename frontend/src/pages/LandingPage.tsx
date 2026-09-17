@@ -34,17 +34,26 @@ export const LandingPage: React.FC = () => {
         initMedia,
     } = useMediaStream(!textOnly && hasConsented);
 
-    // Initialize camera preview if consented and not in text-only mode
+    // Initialize or restore camera preview if consented and not in text-only mode
     useEffect(() => {
-        if (hasConsented && !textOnly) {
-            initMedia().then((stream) => {
-                if (stream && videoPreviewRef.current) {
-                    videoPreviewRef.current.srcObject = stream;
+        if (!joined && hasConsented && !textOnly) {
+            if (localVideoTrack && localVideoTrack.readyState === "live") {
+                localVideoTrack.enabled = true;
+                if (localAudioTrack) localAudioTrack.enabled = true;
+                if (videoPreviewRef.current) {
+                    videoPreviewRef.current.srcObject = new MediaStream([localVideoTrack]);
                     videoPreviewRef.current.play().catch(() => {});
                 }
-            });
+            } else {
+                initMedia().then((stream) => {
+                    if (stream && videoPreviewRef.current) {
+                        videoPreviewRef.current.srcObject = stream;
+                        videoPreviewRef.current.play().catch(() => {});
+                    }
+                });
+            }
         }
-    }, [hasConsented, textOnly, initMedia]);
+    }, [joined, hasConsented, textOnly, localVideoTrack, localAudioTrack, initMedia]);
 
     const handleAcceptConsent = () => {
         try {
@@ -66,6 +75,8 @@ export const LandingPage: React.FC = () => {
     };
 
     const handleLeaveRoom = () => {
+        if (localVideoTrack) localVideoTrack.enabled = true;
+        if (localAudioTrack) localAudioTrack.enabled = true;
         setJoined(false);
     };
 

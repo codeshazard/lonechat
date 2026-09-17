@@ -10,7 +10,29 @@ export function useMediaStream(enabled: boolean) {
     const streamRef = useRef<MediaStream | null>(null);
 
     const initMedia = useCallback(async () => {
-        if (!enabled) return;
+        if (!enabled) return null;
+
+        // If existing stream or video track is already live, reuse it
+        if (streamRef.current && streamRef.current.getVideoTracks().some(t => t.readyState === "live")) {
+            const video = streamRef.current.getVideoTracks()[0];
+            if (video) video.enabled = true;
+            const audio = streamRef.current.getAudioTracks()[0];
+            if (audio) audio.enabled = true;
+            setCamReady(true);
+            return streamRef.current;
+        }
+
+        if (localVideoTrack && localVideoTrack.readyState === "live") {
+            localVideoTrack.enabled = true;
+            if (localAudioTrack) localAudioTrack.enabled = true;
+            const existingStream = new MediaStream(
+                localAudioTrack ? [localVideoTrack, localAudioTrack] : [localVideoTrack]
+            );
+            streamRef.current = existingStream;
+            setCamReady(true);
+            return existingStream;
+        }
+
         try {
             const stream = await navigator.mediaDevices.getUserMedia({
                 video: { width: { ideal: 640 }, height: { ideal: 480 }, frameRate: { ideal: 30 } },
@@ -32,7 +54,7 @@ export function useMediaStream(enabled: boolean) {
             setCamReady(false);
             return null;
         }
-    }, [enabled]);
+    }, [enabled, localVideoTrack, localAudioTrack]);
 
     const toggleMute = useCallback(() => {
         if (localAudioTrack) {

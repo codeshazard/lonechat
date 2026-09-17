@@ -198,6 +198,12 @@ export const RoomPage: React.FC<RoomProps> = ({
         document.documentElement.scrollTop = 0;
     }, []);
 
+    const handleLeave = useCallback(() => {
+        if (localVideoTrack) localVideoTrack.enabled = true;
+        if (localAudioTrack) localAudioTrack.enabled = true;
+        onLeave?.();
+    }, [localVideoTrack, localAudioTrack, onLeave]);
+
     // Bind ESC key to skip
     useEffect(() => {
         const handleKeyDown = (e: KeyboardEvent) => {
@@ -424,7 +430,8 @@ export const RoomPage: React.FC<RoomProps> = ({
             cleanupPeerConnections();
             sock.disconnect();
             socketRef.current = null;
-            setCurrentSocket(null);
+            if (localVideoTrack) localVideoTrack.enabled = true;
+            if (localAudioTrack) localAudioTrack.enabled = true;
         };
     }, [name, preferences, textOnly, localAudioTrack, localVideoTrack, cleanupPeerConnections, startAbuseMonitoring]);
 
@@ -466,7 +473,7 @@ export const RoomPage: React.FC<RoomProps> = ({
                         </div>
 
                         {onLeave && (
-                            <button className="leave-btn" onClick={onLeave} title="Leave room" aria-label="Leave room">
+                            <button className="leave-btn" onClick={handleLeave} title="Leave room" aria-label="Leave room">
                                 Leave
                             </button>
                         )}
